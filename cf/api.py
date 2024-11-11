@@ -1,3 +1,5 @@
+import pprint
+
 from config import RULE_DATA_MAPPING
 import config
 
@@ -7,26 +9,42 @@ class CloudflareAPI:
         self.header = header
 
     def add_rulesets(self, zone):
+        # 获取规则集
         rulesets_url = f"{config.BASE_URL}/zones/{zone['id']}/rulesets"
         ruleset_result = self.header.send_request("GET", rulesets_url, zone["name"])
 
-        # 检查是否存在需要的规则集，并更新对应状态
         for rule in ruleset_result.json().get("result", []):
             phase = rule["phase"]
-            if phase in RULE_DATA_MAPPING:
-                # 规则已经存在
-                rule_info = RULE_DATA_MAPPING[phase]
-                # 通过规则及id获取ruleset
-                rule_id_url = f"{config.BASE_URL}/zones/{zone["id"]}/rulesets/{rule["id"]}"
-                # 修改规则
-                rule_info.pop("exists", None)
-                self.header.send_request("PUT", rule_id_url, "update rulesets", rule_info)
+            # 规则集已经存在
+            if phase in config.RULE_DATA_MAPPING:
+                # 获取定义的规则集内容
+                ruleset_id_url = f"{config.BASE_URL}/zones/{zone['id']}/rulesets/{rule['id']}"
+                ruleset_info = self.header.send_request("GET", ruleset_id_url, zone["name"])
+                rule_descriptions = ruleset_info.json().get("result", {}).get("rules", [])
+                # 检查是否找到相应描述，若未找到则添加或更新
+                expected_desc = config.RULE_DATA_MAPPING.get(phase, {}).get("data", {}).get("rules", [{}])[0].get(
+                    "description")
+                rule_found = False
+                for rule_desc in rule_descriptions:
+                    if rule_desc.get("description") == expected_desc:
+                        print(f"Rule '{expected_desc}' 已存在于 phase '{phase}'")
+                        rule_found = True
+                        break
+                if not rule_found:
+                    print(f"规则 '{expected_desc}' 不存在，执行添加操作")
+                    rules_url = f"{config.BASE_URL}/zones/{zone['id']}/rulesets/{rule['id']}/rules"
+                    self.header.send_request("POST", rules_url, zone["name"],
+                                             data=config.RULE_DATA_MAPPING[phase]["data"]["rules"][0])
 
-        # 创建新的规则集
-        for phase, rule_info in RULE_DATA_MAPPING.items():
-            # 上方if判断中存在则删除了。需要item对象中存在key exists才会执行创建
-            if rule_info.get("exists"):
-                self.header.send_request("POST", rulesets_url, zone["name"], data=rule_info)
+            # 检查并创建新的规则集（仅当不存在 exists 键时）
+        for phase, rule_info in config.RULE_DATA_MAPPING.items():
+            # 如果 exists 键还存在，则表示规则集未被创建
+            if rule_info.get("exists", False):
+                print(rule_info["rule_name"])
+                rule_info.pop("exists", None)  # 移除 exists 键以避免重复创建
+                self.header.send_request("POST", rulesets_url, zone["name"], data=rule_info["data"])
+
+
 
     def purge_cache(self, zone):
         url = f"{config.BASE_URL}/zones/{zone['id']}/purge_cache"
@@ -108,17 +126,14 @@ class CloudflareAPI:
         target_list = self.get_target_list(account_id, while_list)
         if not target_list:
             return
-
         existing_ips = self.header.get_account_info(
             f"{config.BASE_URL}/accounts/{account_id}/rules/lists/{target_list['id']}/items")
         if existing_ips is None:
             return
-        print("c")
         add_item = self.prepare_ips_to_add(ip_list, existing_ips)
         if not add_item:
             print("没有新的IP需要添加")
             return
-
         self.add_ips_to_list(account_id, target_list['id'], add_item)
 
     def get_account_id(self):
@@ -137,13 +152,20 @@ class CloudflareAPI:
         return next((item for item in list_resp.json().get('result') if item['name'] == while_list[0]), None)
 
     def prepare_ips_to_add(self, ip_list, existing_ips):
+        # 创建一个集合，用于去重 IP 地址
         unique_ips_to_add = set()
         add_item = []
+        # 从 existing_ips 中提取出已经存在的 IP 地址
+        existing_ip_set = set(ip['ip'] for ip in existing_ips)
         for ip_info in ip_list:
+            # 拆分 IP 和备注
             ip, remark = ip_info.split(",", 1)
-            if ip not in existing_ips and ip not in unique_ips_to_add:
+            # 检查 IP 是否已经在 existing_ips 中，或者已经在 unique_ips_to_add 中
+            if ip not in existing_ip_set and ip not in unique_ips_to_add:
+                # 如果 IP 没有重复，则加入待添加列表
                 add_item.append({"ip": ip, "comment": remark})
                 unique_ips_to_add.add(ip)
+
         return add_item
 
     def add_ips_to_list(self, account_id, list_id, add_item):
