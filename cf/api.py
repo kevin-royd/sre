@@ -1,5 +1,3 @@
-import pprint
-
 from config import RULE_DATA_MAPPING
 import config
 
@@ -36,15 +34,16 @@ class CloudflareAPI:
                     self.header.send_request("POST", rules_url, zone["name"],
                                              data=config.RULE_DATA_MAPPING[phase]["data"]["rules"][0])
 
+                config.RULE_DATA_MAPPING[phase].pop("exists", None)
+
             # 检查并创建新的规则集（仅当不存在 exists 键时）
         for phase, rule_info in config.RULE_DATA_MAPPING.items():
             # 如果 exists 键还存在，则表示规则集未被创建
-            if rule_info.get("exists", False):
-                print(rule_info["rule_name"])
+            # print("rule_info:",rule_info)
+            if "exists" in rule_info:
+                print(rule_info.get("rule_name"))
                 rule_info.pop("exists", None)  # 移除 exists 键以避免重复创建
                 self.header.send_request("POST", rulesets_url, zone["name"], data=rule_info["data"])
-
-
 
     def purge_cache(self, zone):
         url = f"{config.BASE_URL}/zones/{zone['id']}/purge_cache"
